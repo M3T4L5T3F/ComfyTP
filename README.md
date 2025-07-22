@@ -2,12 +2,15 @@
 
 Run diffusion models across multiple GPUs in ComfyUI using tensor parallelism!
 
-Current State:
-- Ability to run larger models
-- Memory distribution across GPUs
-... Parallel computation improvements (WIP)
+## Current State:
 
-##Testing Status:
+✅ Ability to run larger models
+
+✅ Memory distribution across GPUs
+
+❌ Parallel computation speedup
+
+## Testing Status:
 Currently tested and seems to work with 2x3090s. Generates images, but doesn't seem to completely work yet for 3x and 4x3090s.
 
 ## Overview
