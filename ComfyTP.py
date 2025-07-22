@@ -83,74 +83,118 @@ class ModelSplitter:
         
         device_map = {}
         
-        # Create a list of all blocks with their parameter counts
-        all_blocks = []
-        
-        # Add time embedding
-        all_blocks.append(('time_embed', blocks['time_embed']))
-        
-        # Add input blocks
-        for i in range(len(diffusion_model.input_blocks)):
-            all_blocks.append((f'input_blocks.{i}', blocks['input_blocks'][i]))
-        
-        # Add middle block
-        all_blocks.append(('middle_block', blocks['middle_block']))
-        
-        # Add output blocks
-        for i in range(len(diffusion_model.output_blocks)):
-            all_blocks.append((f'output_blocks.{i}', blocks['output_blocks'][i]))
-        
-        # Add final output
-        all_blocks.append(('out', blocks['out']))
-        
-        # Distribute blocks across GPUs more evenly
-        params_per_gpu = total_params / self.num_gpus
-        current_gpu = 0
-        current_gpu_params = 0
-        
-        # Always keep time_embed on first GPU for stability
-        device_map['time_embed'] = self.gpu_ids[0]
-        current_gpu_params = blocks['time_embed']
-        
-        # Distribute remaining blocks
-        for i in range(1, len(all_blocks)):
-            block_name, block_params = all_blocks[i]
+        # Use specific strategies for common GPU counts
+        if self.num_gpus == 2:
+            # For 2 GPUs: split between input/middle and output
+            device_map['time_embed'] = self.gpu_ids[0]
+            for i in range(len(diffusion_model.input_blocks)):
+                device_map[f'input_blocks.{i}'] = self.gpu_ids[0]
+            device_map['middle_block'] = self.gpu_ids[0]
             
-            # Check if adding this block would exceed the target params per GPU
-            # and we haven't reached the last GPU yet
-            if (current_gpu_params + block_params > params_per_gpu * 1.2 and 
-                current_gpu < self.num_gpus - 1):
-                current_gpu += 1
-                current_gpu_params = 0
+            for i in range(len(diffusion_model.output_blocks)):
+                device_map[f'output_blocks.{i}'] = self.gpu_ids[1]
+            device_map['out'] = self.gpu_ids[1]
             
-            device_map[block_name] = self.gpu_ids[current_gpu]
-            current_gpu_params += block_params
-        
-        # Ensure we're using all GPUs if possible
-        # If we haven't used all GPUs, redistribute more aggressively
-        if current_gpu < self.num_gpus - 1:
-            print(f"Note: Only using {current_gpu + 1} out of {self.num_gpus} GPUs. Redistributing...")
+        elif self.num_gpus == 3:
+            # For 3 GPUs: input blocks, middle, output blocks
+            device_map['time_embed'] = self.gpu_ids[0]
+            for i in range(len(diffusion_model.input_blocks)):
+                device_map[f'input_blocks.{i}'] = self.gpu_ids[0]
             
-            # Recalculate with more aggressive distribution
-            blocks_per_gpu = len(all_blocks) / self.num_gpus
-            for i, (block_name, _) in enumerate(all_blocks):
-                if block_name == 'time_embed':
-                    device_map[block_name] = self.gpu_ids[0]
-                else:
-                    target_gpu = min(int(i / blocks_per_gpu), self.num_gpus - 1)
-                    device_map[block_name] = self.gpu_ids[target_gpu]
+            device_map['middle_block'] = self.gpu_ids[1]
+            
+            for i in range(len(diffusion_model.output_blocks)):
+                device_map[f'output_blocks.{i}'] = self.gpu_ids[2]
+            device_map['out'] = self.gpu_ids[2]
+            
+        elif self.num_gpus == 4:
+            # For 4 GPUs: more balanced distribution
+            num_input_blocks = len(diffusion_model.input_blocks)
+            num_output_blocks = len(diffusion_model.output_blocks)
+            
+            # GPU 0: time_embed + first half of input blocks
+            device_map['time_embed'] = self.gpu_ids[0]
+            for i in range(num_input_blocks // 2):
+                device_map[f'input_blocks.{i}'] = self.gpu_ids[0]
+            
+            # GPU 1: second half of input blocks
+            for i in range(num_input_blocks // 2, num_input_blocks):
+                device_map[f'input_blocks.{i}'] = self.gpu_ids[1]
+            
+            # GPU 2: middle block + first half of output blocks
+            device_map['middle_block'] = self.gpu_ids[2]
+            for i in range(num_output_blocks // 2):
+                device_map[f'output_blocks.{i}'] = self.gpu_ids[2]
+            
+            # GPU 3: second half of output blocks + final output
+            for i in range(num_output_blocks // 2, num_output_blocks):
+                device_map[f'output_blocks.{i}'] = self.gpu_ids[3]
+            device_map['out'] = self.gpu_ids[3]
+            
+        else:
+            # For other GPU counts, use parameter-based distribution
+            # Create a list of all blocks with their parameter counts
+            all_blocks = []
+            
+            # Add time embedding
+            all_blocks.append(('time_embed', blocks['time_embed']))
+            
+            # Add input blocks
+            for i in range(len(diffusion_model.input_blocks)):
+                all_blocks.append((f'input_blocks.{i}', blocks['input_blocks'][i]))
+            
+            # Add middle block
+            all_blocks.append(('middle_block', blocks['middle_block']))
+            
+            # Add output blocks
+            for i in range(len(diffusion_model.output_blocks)):
+                all_blocks.append((f'output_blocks.{i}', blocks['output_blocks'][i]))
+            
+            # Add final output
+            all_blocks.append(('out', blocks['out']))
+            
+            # Distribute blocks across GPUs more evenly
+            params_per_gpu = total_params / self.num_gpus
+            current_gpu = 0
+            current_gpu_params = 0
+            
+            # Always keep time_embed on first GPU for stability
+            device_map['time_embed'] = self.gpu_ids[0]
+            current_gpu_params = blocks['time_embed']
+            
+            # Distribute remaining blocks
+            for i in range(1, len(all_blocks)):
+                block_name, block_params = all_blocks[i]
+                
+                # Check if adding this block would exceed the target params per GPU
+                # and we haven't reached the last GPU yet
+                if (current_gpu_params + block_params > params_per_gpu * 1.2 and 
+                    current_gpu < self.num_gpus - 1):
+                    current_gpu += 1
+                    current_gpu_params = 0
+                
+                device_map[block_name] = self.gpu_ids[current_gpu]
+                current_gpu_params += block_params
         
         return device_map
 
 class TensorParallelDiffusionWrapper(nn.Module):
     """Wrapper that handles multi-GPU execution for diffusion models"""
     
-    def __init__(self, model, device_map: Dict[str, int], gpu_ids: List[int]):
+    def __init__(self, model, device_map: Dict[str, int], gpu_ids: List[int], use_streams: bool = True):
         super().__init__()
         self.model = model
         self.device_map = device_map
         self.gpu_ids = gpu_ids
         self.handles = []
+        self.use_streams = use_streams and len(gpu_ids) > 1
+        
+        # Create CUDA streams for each GPU
+        self.streams = {}
+        if self.use_streams:
+            for gpu_id in gpu_ids:
+                torch.cuda.set_device(gpu_id)
+                self.streams[gpu_id] = torch.cuda.Stream()
         
         # Move layers to their assigned devices
         self._distribute_layers()
@@ -376,7 +420,7 @@ class TensorParallelDiffusionWrapper(nn.Module):
             self._verify_distribution()
     
     def forward(self, x, timesteps=None, context=None, y=None, **kwargs):
-        """Forward pass with tensor movement between GPUs"""
+        """Forward pass with tensor movement between GPUs and memory optimizations"""
         # Store the original input device - this is critical!
         input_device = x.device
         
@@ -384,6 +428,7 @@ class TensorParallelDiffusionWrapper(nn.Module):
         if not hasattr(self, '_forward_count'):
             self._forward_count = 0
             self._last_gpu_log = 0
+            self._last_memory_clear = 0
             # Do a final device check on first forward
             self._check_device_placement()
             
@@ -399,6 +444,14 @@ class TensorParallelDiffusionWrapper(nn.Module):
                 total = torch.cuda.get_device_properties(gpu_id).total_memory / 1024**3
                 print(f"GPU {gpu_id}: {allocated:.2f} GB / {total:.2f} GB allocated")
             print(f"Input shape: {x.shape}, Input device: {input_device}")
+        
+        # Clear cache periodically to prevent memory buildup
+        if self._forward_count - self._last_memory_clear >= 10:
+            self._last_memory_clear = self._forward_count
+            if not self.training:  # Only clear during inference
+                for gpu_id in self.gpu_ids:
+                    torch.cuda.set_device(gpu_id)
+                    torch.cuda.empty_cache()
         
         # Get the dtype from the model
         diffusion_model = self.model.diffusion_model
@@ -525,27 +578,41 @@ class TensorParallelDiffusionWrapper(nn.Module):
         
         # Input blocks
         for i, module in enumerate(diffusion_model.input_blocks):
-            device = f'cuda:{self.device_map.get(f"input_blocks.{i}", self.gpu_ids[0])}'
-            h = h.to(device=device, dtype=model_dtype)
-            # Keep t_emb in its original dtype (might be different from model dtype)
-            t_emb_device = t_emb.to(device=device)
+            device_id = self.device_map.get(f'input_blocks.{i}', self.gpu_ids[0])
+            device = f'cuda:{device_id}'
             
-            # Debug for the problematic block
-            if i == 1 and self._forward_count == 1:
-                print(f"\n=== Debug at input_blocks[{i}] ===")
-                print(f"Module type: {type(module)}")
-                print(f"H shape before: {h.shape}")
-                if hasattr(module, '1') and hasattr(module[1], 'transformer_blocks'):
-                    print(f"Has transformer blocks: Yes")
-            
-            # Move context to device
-            if context is not None:
-                if isinstance(context, list):
-                    context_device = [c.to(device=device, dtype=model_dtype) if c is not None else None for c in context]
-                else:
-                    context_device = context.to(device=device, dtype=model_dtype)
+            if self.use_streams:
+                # Use CUDA streams for overlapped execution
+                stream = self.streams[device_id]
+                with torch.cuda.stream(stream):
+                    # Async transfer to device
+                    h = h.to(device=device, dtype=model_dtype, non_blocking=True)
+                    t_emb_device = t_emb.to(device=device, non_blocking=True)
+                    
+                    # Move context if needed
+                    if context is not None:
+                        if isinstance(context, list):
+                            context_device = [c.to(device=device, dtype=model_dtype, non_blocking=True) if c is not None else None for c in context]
+                        else:
+                            context_device = context.to(device=device, dtype=model_dtype, non_blocking=True)
+                    else:
+                        context_device = None
+                    
+                    # Wait for transfers
+                    stream.synchronize()
             else:
-                context_device = None
+                # Standard synchronous transfer
+                h = h.to(device=device, dtype=model_dtype)
+                t_emb_device = t_emb.to(device=device)
+                
+                # Move context to device
+                if context is not None:
+                    if isinstance(context, list):
+                        context_device = [c.to(device=device, dtype=model_dtype) if c is not None else None for c in context]
+                    else:
+                        context_device = context.to(device=device, dtype=model_dtype)
+                else:
+                    context_device = None
             
             # Move transformer_options to device if needed
             transformer_options = kwargs.get('transformer_options', {})
@@ -590,7 +657,16 @@ class TensorParallelDiffusionWrapper(nn.Module):
             else:
                 h = module(h)
                 
+            # Store intermediate activations
             hs.append(h)
+            
+            # Aggressive memory clearing in aggressive mode
+            if hasattr(self.model, 'memory_mode') and self.model.memory_mode == "aggressive":
+                if i > 0 and i % 2 == 0:  # Clear every 2 blocks
+                    torch.cuda.synchronize()
+                    for gpu_id in self.gpu_ids:
+                        with torch.cuda.device(gpu_id):
+                            torch.cuda.empty_cache()
         
         # Middle block
         device = f'cuda:{self.device_map.get("middle_block", self.gpu_ids[0])}'
@@ -634,9 +710,10 @@ class TensorParallelDiffusionWrapper(nn.Module):
             else:
                 raise
         
-        # Output blocks
+        # Output blocks with memory-efficient skip connections
         for i, module in enumerate(diffusion_model.output_blocks):
-            device = f'cuda:{self.device_map.get(f"output_blocks.{i}", self.gpu_ids[-1])}'
+            device_id = self.device_map.get(f'output_blocks.{i}', self.gpu_ids[-1])
+            device = f'cuda:{device_id}'
             
             # Debug device tracking
             if self._forward_count <= 2:
@@ -645,43 +722,55 @@ class TensorParallelDiffusionWrapper(nn.Module):
                 print(f"H device before move: {h.device}")
                 print(f"Skip connection device: {hs[-1].device}")
             
-            h = h.to(device=device, dtype=model_dtype)
-            h_skip = hs.pop().to(device=device, dtype=model_dtype)
-            # Keep t_emb in its original dtype
-            t_emb_device = t_emb.to(device=device)
+            if self.use_streams:
+                stream = self.streams[device_id]
+                with torch.cuda.stream(stream):
+                    # Get skip connection and immediately free the list entry
+                    h_skip = hs.pop()
+                    
+                    # Async transfer both tensors
+                    h = h.to(device=device, dtype=model_dtype, non_blocking=True)
+                    h_skip = h_skip.to(device=device, dtype=model_dtype, non_blocking=True)
+                    t_emb_device = t_emb.to(device=device, non_blocking=True)
+                    
+                    # Move context
+                    if context is not None:
+                        if isinstance(context, list):
+                            context_device = [c.to(device=device, dtype=model_dtype, non_blocking=True) if c is not None else None for c in context]
+                        else:
+                            context_device = context.to(device=device, dtype=model_dtype, non_blocking=True)
+                    else:
+                        context_device = None
+                    
+                    # Wait for transfers
+                    stream.synchronize()
+            else:
+                # Standard processing
+                h = h.to(device=device, dtype=model_dtype)
+                h_skip = hs.pop().to(device=device, dtype=model_dtype)
+                t_emb_device = t_emb.to(device=device)
+                
+                # Handle context for output blocks
+                if context is not None:
+                    if isinstance(context, list):
+                        context_device = [c.to(device=device, dtype=model_dtype) if c is not None else None for c in context]
+                    else:
+                        context_device = context.to(device=device, dtype=model_dtype)
+                else:
+                    context_device = None
             
             if self._forward_count <= 2:
                 print(f"H device after move: {h.device}")
                 print(f"h_skip device after move: {h_skip.device}")
             
-            # Check module parameters are on correct device
-            if self._forward_count == 1 and hasattr(module, 'parameters'):
-                param_devices = set()
-                for p in module.parameters():
-                    param_devices.add(p.device)
-                if len(param_devices) > 1:
-                    print(f"WARNING: Mixed devices in output_blocks[{i}]: {param_devices}")
-                elif len(param_devices) == 1:
-                    expected_device = next(iter(param_devices))
-                    if h.device != expected_device:
-                        print(f"WARNING: Tensor device mismatch in output_blocks[{i}]:")
-                        print(f"  Tensor on: {h.device}")
-                        print(f"  Module expects: {expected_device}")
+            # Concatenate skip connection
+            h = torch.cat([h, h_skip], dim=1)
             
-            # Handle context for output blocks
-            if context is not None:
-                if isinstance(context, list):
-                    context_device = [c.to(device=device, dtype=model_dtype) if c is not None else None for c in context]
-                else:
-                    context_device = context.to(device=device, dtype=model_dtype)
-            else:
-                context_device = None
+            # Free skip connection memory immediately
+            del h_skip
             
             # Move transformer_options
             transformer_options = kwargs.get('transformer_options', {})
-            
-            # Concatenate skip connection
-            h = torch.cat([h, h_skip], dim=1)
             
             # Forward through block
             if hasattr(module, 'forward'):
@@ -751,6 +840,12 @@ class MultiGPUDiffusionModel:
                 }),
                 "verbose": ("BOOLEAN", {"default": True}),
             },
+            "optional": {
+                "memory_mode": (["fast", "balanced", "aggressive"], {
+                    "default": "balanced",
+                    "tooltip": "Memory optimization mode: fast=more memory/speed, aggressive=less memory/slower"
+                }),
+            }
         }
     
     RETURN_TYPES = ("MODEL",)
@@ -758,8 +853,18 @@ class MultiGPUDiffusionModel:
     FUNCTION = "split_model"
     CATEGORY = "advanced/model"
     
-    def split_model(self, model, gpu_ids, verbose):
-        """Split model across multiple GPUs"""
+    def split_model(self, model, gpu_ids, verbose, memory_mode="balanced"):
+        """Split model across multiple GPUs
+        
+        Args:
+            model: The model to split
+            gpu_ids: Comma-separated GPU IDs
+            verbose: Whether to print debug info
+            memory_mode: Memory optimization mode
+                - "fast": Prioritize speed, use more memory
+                - "balanced": Balance between speed and memory (default)
+                - "aggressive": Minimize memory usage, may be slower
+        """
         
         # Parse GPU IDs
         gpu_list = [int(x.strip()) for x in gpu_ids.split(',')]
@@ -827,14 +932,18 @@ class MultiGPUDiffusionModel:
         
         # Replace the forward method with our multi-GPU version
         original_model = cloned_model.model
-        wrapped_model = TensorParallelDiffusionWrapper(original_model, device_map, gpu_list)
+        
+        # Enable streams only in fast or balanced mode
+        use_streams = memory_mode in ["fast", "balanced"]
+        wrapped_model = TensorParallelDiffusionWrapper(original_model, device_map, gpu_list, use_streams)
         
         # Create a more comprehensive wrapper
         class MultiGPUModelWrapper(nn.Module):
-            def __init__(self, wrapped_model, original_model):
+            def __init__(self, wrapped_model, original_model, memory_mode):
                 super().__init__()
                 self.wrapped_diffusion_model = wrapped_model
                 self.original_model = original_model
+                self.memory_mode = memory_mode
                 
                 # CRITICAL: Replace the actual diffusion_model's forward method
                 # This ensures any direct calls to diffusion_model() go through our multi-GPU path
@@ -872,7 +981,7 @@ class MultiGPUDiffusionModel:
                 # Call our multi-GPU forward
                 return self._multi_gpu_forward(xc, sigma, context=context, y=y, **kwargs)
         
-        cloned_model.model = MultiGPUModelWrapper(wrapped_model, original_model)
+        cloned_model.model = MultiGPUModelWrapper(wrapped_model, original_model, memory_mode)
         
         # Print memory usage
         if verbose:
