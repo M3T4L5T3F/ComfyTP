@@ -11,7 +11,7 @@ Run diffusion models across multiple GPUs in ComfyUI using tensor parallelism!
 ❌ Parallel computation speedup
 
 ## Testing Status:
-Currently tested and seems to work with 2x3090s. Generates images, but doesn't seem to completely work yet for 3x and 4x3090s.
+Currently tested and seems to work with 2x3090s and 4x4090s. Generates images, but needs more testing, and need to figure out if we can get parallel processing going.
 
 ## Overview
 
